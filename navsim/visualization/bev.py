@@ -2,6 +2,7 @@ from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 from nuplan.common.actor_state.car_footprint import CarFootprint
 from nuplan.common.actor_state.oriented_box import OrientedBox
 from nuplan.common.actor_state.state_representation import StateSE2
@@ -151,7 +152,9 @@ def add_lidar_to_bev_ax(ax: plt.Axes, lidar: Lidar) -> plt.Axes:
     return ax
 
 
-def add_trajectory_to_bev_ax(ax: plt.Axes, trajectory: Trajectory, config: Dict[str, Any]) -> plt.Axes:
+def add_trajectory_to_bev_ax(
+    ax: plt.Axes, trajectory: Trajectory, config: Dict[str, Any], add_origin: bool = True
+) -> plt.Axes:
     """
     Add trajectory poses as lint to plot
     :param ax: matplotlib ax object
@@ -159,10 +162,26 @@ def add_trajectory_to_bev_ax(ax: plt.Axes, trajectory: Trajectory, config: Dict[
     :param config: dictionary with plot parameters
     :return: ax with plot
     """
-    poses = np.concatenate([np.array([[0, 0]]), trajectory.poses[:, :2]])
+    poses = trajectory.poses[:, :2]
+    if add_origin:
+        poses = np.concatenate([np.array([[0, 0]]), poses])
+    return add_pose_trajectory_to_bev_ax(ax, poses, config)
+
+
+def add_pose_trajectory_to_bev_ax(
+    ax: plt.Axes, poses: npt.NDArray[np.float32], config: Dict[str, Any]
+) -> plt.Axes:
+    """
+    Add a trajectory described directly by an array of local (x, y) or (x, y, heading) poses.
+    :param ax: matplotlib ax object
+    :param poses: array of trajectory poses in local coordinates
+    :param config: dictionary with plot parameters
+    :return: ax with plot
+    """
+    poses_xy = poses[:, :2]
     ax.plot(
-        poses[:, 1],
-        poses[:, 0],
+        poses_xy[:, 1],
+        poses_xy[:, 0],
         color=config["line_color"],
         alpha=config["line_color_alpha"],
         linewidth=config["line_width"],

@@ -1,15 +1,19 @@
 import io
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
+from nuplan.common.actor_state.state_representation import StateSE2
+from nuplan.common.geometry.convert import relative_to_absolute_poses
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import Scene
-from navsim.visualization.bev import add_configured_bev_on_ax, add_trajectory_to_bev_ax
+from navsim.visualization.bev import add_configured_bev_on_ax, add_pose_trajectory_to_bev_ax, add_trajectory_to_bev_ax
 from navsim.visualization.camera import add_annotations_to_camera_ax, add_camera_ax, add_lidar_to_camera_ax
 from navsim.visualization.config import BEV_PLOT_CONFIG, CAMERAS_PLOT_CONFIG, TRAJECTORY_CONFIG
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import convert_absolute_to_relative_se2_array
 
 
 def configure_bev_ax(ax: plt.Axes) -> plt.Axes:
@@ -89,6 +93,73 @@ def plot_bev_with_agent(scene: Scene, agent: AbstractAgent) -> Tuple[plt.Figure,
     add_trajectory_to_bev_ax(ax, agent_trajectory, TRAJECTORY_CONFIG["agent"])
     configure_bev_ax(ax)
     configure_ax(ax)
+
+    return fig, ax
+
+
+def _extract_target_trajectories(scene: Scene, frame_idx: int) -> Dict[str, np.ndarray]:
+    """
+    Extract per-target future trajectories in the current ego frame.
+    Returns a mapping from instance token to an array of poses (x, y, heading).
+    """
+
+    current_frame = scene.frames[frame_idx]
+    current_ego_pose = StateSE2(*current_frame.ego_status.ego_pose)
+
+    target_trajectories: Dict[str, List[np.ndarray]] = {
+        token: [] for token in current_frame.annotations.instance_tokens
+    }
+
+    for future_frame in scene.frames[frame_idx:]:
+        future_ego_pose = StateSE2(*future_frame.ego_status.ego_pose)
+        future_annotation_indices = {
+            token: idx for idx, token in enumerate(future_frame.annotations.instance_tokens)
+        }
+
+        for token in list(target_trajectories.keys()):
+            if token not in future_annotation_indices:
+                continue
+
+            annotation_idx = future_annotation_indices[token]
+            target_pose_local = future_frame.annotations.boxes[annotation_idx, :3]
+            target_pose_global = relative_to_absolute_poses(
+                future_ego_pose,
+                [StateSE2(*target_pose_local)],
+            )[0]
+            target_pose_relative = convert_absolute_to_relative_se2_array(
+                current_ego_pose,
+                np.array([[target_pose_global.x, target_pose_global.y, target_pose_global.heading]], dtype=np.float64),
+            )[0]
+            target_trajectories[token].append(target_pose_relative)
+
+    return {
+        token: np.asarray(trajectory, dtype=np.float32)
+        for token, trajectory in target_trajectories.items()
+        if len(trajectory) > 1
+    }
+
+
+def plot_bev_with_agent_and_target_trajectories(
+    scene: Scene,
+    agent: AbstractAgent,
+    max_targets: Optional[int] = None,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """
+    Plot ego/human trajectories together with future trajectories of current annotated targets.
+    :param scene: navsim scene dataclass
+    :param agent: navsim agent
+    :param max_targets: optionally limit the number of plotted targets to reduce clutter
+    :return: figure and ax object of matplotlib
+    """
+
+    fig, ax = plot_bev_with_agent(scene, agent)
+    frame_idx = scene.scene_metadata.num_history_frames - 1
+    target_trajectories = _extract_target_trajectories(scene, frame_idx)
+
+    for idx, (_, poses) in enumerate(target_trajectories.items()):
+        if max_targets is not None and idx >= max_targets:
+            break
+        add_pose_trajectory_to_bev_ax(ax, poses, TRAJECTORY_CONFIG["target"])
 
     return fig, ax
 

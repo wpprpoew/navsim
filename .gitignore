@@ -15,15 +15,21 @@
 *.pkl
 *.jpg
 *.pcd
+*.gif
 
 # exp
 exp
 
 # data
 dataset
+download/
 
 # lsf
 *.bsub
 
 # running scripts
 scripts_dev/*
+
+# output
+output/
+.ipynb_checkpoints/
