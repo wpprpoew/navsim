@@ -100,20 +100,28 @@ def plot_bev_with_agent(scene: Scene, agent: AbstractAgent) -> Tuple[plt.Figure,
 def _extract_target_trajectories(scene: Scene, frame_idx: int) -> Dict[str, np.ndarray]:
     """
     Extract per-target future trajectories in the current ego frame.
-    Returns a mapping from instance token to an array of poses (x, y, heading).
+    Returns a mapping from track token to an array of poses (x, y, heading).
+    Only dynamic foreground targets that are easy to read in the plot are kept.
     """
 
     current_frame = scene.frames[frame_idx]
     current_ego_pose = StateSE2(*current_frame.ego_status.ego_pose)
+    allowed_target_names = {"vehicle", "pedestrian"}
 
     target_trajectories: Dict[str, List[np.ndarray]] = {
-        token: [] for token in current_frame.annotations.instance_tokens
+        token: []
+        for token, name in zip(current_frame.annotations.track_tokens, current_frame.annotations.names)
+        if name in allowed_target_names
     }
 
     for future_frame in scene.frames[frame_idx:]:
         future_ego_pose = StateSE2(*future_frame.ego_status.ego_pose)
         future_annotation_indices = {
-            token: idx for idx, token in enumerate(future_frame.annotations.instance_tokens)
+            token: idx
+            for idx, (token, name) in enumerate(
+                zip(future_frame.annotations.track_tokens, future_frame.annotations.names)
+            )
+            if name in allowed_target_names
         }
 
         for token in list(target_trajectories.keys()):
@@ -139,10 +147,31 @@ def _extract_target_trajectories(scene: Scene, frame_idx: int) -> Dict[str, np.n
     }
 
 
+def _rank_target_tokens_by_ego_trajectory_distance(
+    target_trajectories: Dict[str, np.ndarray],
+    ego_trajectories: List[np.ndarray],
+) -> List[str]:
+    """
+    Rank target trajectories by the minimum distance between any target point and any ego trajectory point.
+    Lower rank means closer to the ego trajectory visualization.
+    """
+
+    ego_points = np.concatenate([trajectory[:, :2] for trajectory in ego_trajectories], axis=0)
+    ranked_tokens_with_distance: List[Tuple[str, float]] = []
+
+    for token, poses in target_trajectories.items():
+        target_points = poses[:, :2]
+        distances = np.linalg.norm(target_points[:, None, :] - ego_points[None, :, :], axis=-1)
+        ranked_tokens_with_distance.append((token, float(np.min(distances))))
+
+    ranked_tokens_with_distance.sort(key=lambda item: item[1])
+    return [token for token, _ in ranked_tokens_with_distance]
+
+
 def plot_bev_with_agent_and_target_trajectories(
     scene: Scene,
     agent: AbstractAgent,
-    max_targets: Optional[int] = None,
+    max_targets: Optional[int] = 10,
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Plot ego/human trajectories together with future trajectories of current annotated targets.
@@ -152,13 +181,21 @@ def plot_bev_with_agent_and_target_trajectories(
     :return: figure and ax object of matplotlib
     """
 
-    fig, ax = plot_bev_with_agent(scene, agent)
     frame_idx = scene.scene_metadata.num_history_frames - 1
-    target_trajectories = _extract_target_trajectories(scene, frame_idx)
+    human_trajectory = scene.get_future_trajectory()
+    agent_trajectory = agent.compute_trajectory(scene.get_agent_input())
 
-    for idx, (_, poses) in enumerate(target_trajectories.items()):
+    fig, ax = plot_bev_with_agent(scene, agent)
+    target_trajectories = _extract_target_trajectories(scene, frame_idx)
+    ranked_tokens = _rank_target_tokens_by_ego_trajectory_distance(
+        target_trajectories,
+        [human_trajectory.poses, agent_trajectory.poses],
+    )
+
+    for idx, token in enumerate(ranked_tokens):
         if max_targets is not None and idx >= max_targets:
             break
+        poses = target_trajectories[token]
         add_pose_trajectory_to_bev_ax(ax, poses, TRAJECTORY_CONFIG["target"])
 
     return fig, ax
